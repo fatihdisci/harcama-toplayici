@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Gelir–Gider PDF Birleştirici (Yerel)</title>
+<style>
+  :root{--bg:#121212;--card:#1e1e1e;--text:#fff;--accent:#4caf50;--muted:#9e9e9e}
+  body{margin:0;font-family:system-ui,Arial;background:var(--bg);color:var(--text)}
+  .wrap{max-width:980px;margin:24px auto;padding:16px}
+  h1{font-size:22px;margin:0 0 16px}
+  .grid{display:grid;gap:16px}
+  @media(min-width:900px){.grid{grid-template-columns:1fr 1fr}}
+  .card{background:var(--card);border-radius:12px;padding:16px;border:1px solid #222}
+  .drop{border:2px dashed #333;border-radius:10px;padding:14px;text-align:center;color:var(--muted)}
+  .drop.drag{border-color:var(--accent);color:var(--accent)}
+  .row{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+  button{border:0;border-radius:8px;padding:10px 12px;background:var(--accent);color:#fff;font-weight:600;cursor:pointer}
+  button.secondary{background:#2e7d32}
+  button.ghost{background:#2a2a2a}
+  .list{margin-top:12px;display:flex;flex-direction:column;gap:8px;max-height:260px;overflow:auto}
+  .item{display:flex;align-items:center;justify-content:space-between;gap:8px;background:#161616;border:1px solid #262626;border-radius:8px;padding:8px}
+  .item span{font-size:14px;word-break:break-all}
+  .handle{cursor:grab;padding:6px 10px;border-radius:6px;background:#232323}
+  .muted{color:var(--muted);font-size:13px}
+  footer{margin-top:18px;color:var(--muted);font-size:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Gelir–Gider PDF Birleştirici</h1>
+  <div class="grid">
+    <!-- Giderler -->
+    <div class="card" id="giderCard">
+      <h2>Giderler (harcama fişi, gider makbuzu vb.)</h2>
+      <div class="drop" id="giderDrop">Dosyaları buraya bırak veya 
+        <label>
+          <input type="file" id="giderInput" multiple accept=".pdf,.png,.jpg,.jpeg" hidden>
+          <u>seç</u>
+        </label>
+      </div>
+      <div class="row">
+        <button id="giderPdfBtn">Gider PDF Oluştur</button>
+        <button class="ghost" id="giderClearBtn">Temizle</button>
+      </div>
+      <div class="muted">Sürükle–bırakla listede sıralamayı değiştirebilirsin.</div>
+      <div class="list" id="giderList"></div>
+    </div>
+
+    <!-- Gelirler -->
+    <div class="card" id="gelirCard">
+      <h2>Gelirler (Serbest Meslek Makbuzları)</h2>
+      <div class="drop" id="gelirDrop">Dosyaları buraya bırak veya 
+        <label>
+          <input type="file" id="gelirInput" multiple accept=".pdf,.png,.jpg,.jpeg" hidden>
+          <u>seç</u>
+        </label>
+      </div>
+      <div class="row">
+        <button id="gelirPdfBtn">Gelir PDF Oluştur</button>
+        <button class="ghost" id="gelirClearBtn">Temizle</button>
+      </div>
+      <div class="muted">Sürükle–bırakla listede sıralamayı değiştirebilirsin.</div>
+      <div class="list" id="gelirList"></div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <h2>Toplu İşlemler</h2>
+    <div class="row">
+      <button class="secondary" id="allPdfBtn">Tümü Tek PDF</button>
+      <button class="ghost" id="allClearBtn">Tümünü Temizle</button>
+    </div>
+    <p class="muted">Not: Tümü Tek PDF, önce giderler sonra gelirler sırasıyla birleştirir.</p>
+  </div>
+
+  <footer>Veriler tarayıcınızda işlenir; sunucuya yüklenmez.</footer>
+</div>
+
+<!-- PDF-LIB (CDN) -->
+<script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+
+<script>
+(function(){
+  const { PDFDocument, StandardFonts } = PDFLib;
+
+  // Eyalet
+  const state = {
+    gider: [],
+    gelir: []
+  };
+
+  // Yardımcılar
+  const fmtDate = () => {
+    const d = new Date();
+    const pad = n => String(n).padStart(2,'0');
+    return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+  };
+
+  const isPDF = (file) => file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
+  const isImage = (file) => /image\/(png|jpeg)/.test(file.type) || /\.(png|jpg|jpeg)$/i.test(file.name);
+
+  const readAsArrayBuffer = (file) => new Promise((res, rej)=>{
+    const r = new FileReader();
+    r.onload = () => res(r.result);
+    r.onerror = rej;
+    r.readAsArrayBuffer(file);
+  });
+
+  // Liste UI
+  function renderList(container, arr, bucket){
+    container.innerHTML = '';
+    arr.forEach((f, idx)=>{
+      const el = document.createElement('div');
+      el.className = 'item';
+      el.draggable = true;
+      el.dataset.index = idx;
+
+      const left = document.createElement('div');
+      left.style.display='flex'; left.style.alignItems='center'; left.style.gap='8px';
+
+      const handle = document.createElement('div');
+      handle.className = 'handle';
+      handle.textContent = '↕';
+      left.appendChild(handle);
+
+      const name = document.createElement('span');
+      name.textContent = f.name;
+      left.appendChild(name);
+
+      const right = document.createElement('div');
+      const rm = document.createElement('button');
+      rm.className='ghost';
+      rm.textContent='Kaldır';
+      rm.onclick = () => {
+        arr.splice(idx,1);
+        renderList(container, arr, bucket);
+      };
+      right.appendChild(rm);
+
+      el.appendChild(left);
+      el.appendChild(right);
+
+      // Drag reorder
+      el.addEventListener('dragstart', (ev)=>{
+        ev.dataTransfer.setData('text/plain', idx);
+      });
+      el.addEventListener('dragover', (ev)=>ev.preventDefault());
+      el.addEventListener('drop', (ev)=>{
+        ev.preventDefault();
+        const from = +ev.dataTransfer.getData('text/plain');
+        const to = idx;
+        if(from===to) return;
+        const moved = arr.splice(from,1)[0];
+        arr.splice(to,0,moved);
+        renderList(container, arr, bucket);
+      });
+
+      container.appendChild(el);
+    });
+  }
+
+  // Drop alanı
+  function wireDropArea(dropEl, inputEl, targetArr, listEl, bucket){
+    dropEl.addEventListener('dragover', (e)=>{e.preventDefault(); dropEl.classList.add('drag');});
+    dropEl.addEventListener('dragleave', ()=>dropEl.classList.remove('drag'));
+    dropEl.addEventListener('drop', (e)=>{
+      e.preventDefault(); dropEl.classList.remove('drag');
+      const files = Array.from(e.dataTransfer.files);
+      pushFiles(targetArr, files, listEl, bucket);
+    });
+    dropEl.addEventListener('click', ()=> inputEl.click());
+    inputEl.addEventListener('change', ()=>{
+      const files = Array.from(inputEl.files||[]);
+      pushFiles(targetArr, files, listEl, bucket);
+      inputEl.value = '';
+    });
+  }
+
+  function pushFiles(arr, files, listEl, bucket){
+    const valid = files.filter(f => isPDF(f) || isImage(f));
+    arr.push(...valid);
+    renderList(listEl, arr, bucket);
+  }
+
+  // PDF oluşturma
+  async function filesToPDF(files){
+    const out = await PDFDocument.create();
+
+    for(const file of files){
+      if(isPDF(file)){
+        const bytes = await readAsArrayBuffer(file);
+        const src = await PDFDocument.load(bytes);
+        const copied = await out.copyPages(src, src.getPageIndices());
+        copied.forEach(p=>out.addPage(p));
+      }else if(isImage(file)){
+        const bytes = await readAsArrayBuffer(file);
+        const isJpeg = /\.jpe?g$/i.test(file.name) || file.type==='image/jpeg';
+        const img = isJpeg ? await out.embedJpg(bytes) : await out.embedPng(bytes);
+
+        // Görseli A4 sayfaya "contain" yerleştir
+        const A4 = { w: 595.28, h: 841.89 }; // 72dpi
+        const page = out.addPage([A4.w, A4.h]);
+        const iw = img.width, ih = img.height;
+        const scale = Math.min(A4.w*0.9/iw, A4.h*0.9/ih);
+        const dw = iw*scale, dh = ih*scale;
+        const x = (A4.w - dw)/2, y = (A4.h - dh)/2;
+        page.drawImage(img, { x, y, width: dw, height: dh });
+      }
+    }
+    return out.save();
+  }
+
+  async function makeAndDownload(files, name){
+    if(!files.length){ alert('Dosya eklemediniz.'); return; }
+    try{
+      const pdfBytes = await filesToPDF(files);
+      const blob = new Blob([pdfBytes], {type:'application/pdf'});
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = name;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    }catch(err){
+      console.error(err);
+      alert('PDF oluşturulurken bir hata oluştu.');
+    }
+  }
+
+  // Elemanlar
+  const giderDrop = document.getElementById('giderDrop');
+  const giderInput = document.getElementById('giderInput');
+  const giderList = document.getElementById('giderList');
+  wireDropArea(giderDrop, giderInput, state.gider, giderList, 'gider');
+
+  const gelirDrop = document.getElementById('gelirDrop');
+  const gelirInput = document.getElementById('gelirInput');
+  const gelirList = document.getElementById('gelirList');
+  wireDropArea(gelirDrop, gelirInput, state.gelir, gelirList, 'gelir');
+
+  // Butonlar
+  document.getElementById('giderPdfBtn').onclick = ()=> makeAndDownload(state.gider, `GIDER_${fmtDate()}.pdf`);
+  document.getElementById('gelirPdfBtn').onclick = ()=> makeAndDownload(state.gelir, `GELIR_${fmtDate()}.pdf`);
+  document.getElementById('allPdfBtn').onclick = ()=> {
+    const all = [...state.gider, ...state.gelir];
+    makeAndDownload(all, `TUMU_${fmtDate()}.pdf`);
+  };
+
+  document.getElementById('giderClearBtn').onclick = ()=>{ state.gider.length=0; renderList(giderList, state.gider, 'gider'); };
+  document.getElementById('gelirClearBtn').onclick = ()=>{ state.gelir.length=0; renderList(gelirList, state.gelir, 'gelir'); };
+  document.getElementById('allClearBtn').onclick = ()=>{
+    state.gider.length=0; state.gelir.length=0;
+    renderList(giderList, state.gider, 'gider');
+    renderList(gelirList, state.gelir, 'gelir');
+  };
+
+})();
+</script>
+</body>
+</html>
