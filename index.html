@@ -5,14 +5,16 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Gelir–Gider PDF Birleştirici (Yerel)</title>
 <style>
-  :root{--bg:#121212;--card:#1e1e1e;--text:#fff;--accent:#4caf50;--muted:#9e9e9e}
-  body{margin:0;font-family:system-ui,Arial;background:var(--bg);color:var(--text)}
+  :root{--bg:#121212;--card:#1e1e1e;--text:#ffffff;--accent:#4caf50;--muted:#9e9e9e}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,-apple-system,Arial,Segoe UI;background:var(--bg);color:var(--text)}
   .wrap{max-width:980px;margin:24px auto;padding:16px}
   h1{font-size:22px;margin:0 0 16px}
+  h2{font-size:18px;margin:0 0 10px}
   .grid{display:grid;gap:16px}
   @media(min-width:900px){.grid{grid-template-columns:1fr 1fr}}
   .card{background:var(--card);border-radius:12px;padding:16px;border:1px solid #222}
-  .drop{border:2px dashed #333;border-radius:10px;padding:14px;text-align:center;color:var(--muted)}
+  .drop{border:2px dashed #333;border-radius:10px;padding:14px;text-align:center;color:var(--muted);user-select:none}
   .drop.drag{border-color:var(--accent);color:var(--accent)}
   .row{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
   button{border:0;border-radius:8px;padding:10px 12px;background:var(--accent);color:#fff;font-weight:600;cursor:pointer}
@@ -43,7 +45,7 @@
         <button id="giderPdfBtn">Gider PDF Oluştur</button>
         <button class="ghost" id="giderClearBtn">Temizle</button>
       </div>
-      <div class="muted">Sürükle–bırakla listede sıralamayı değiştirebilirsin.</div>
+      <div class="muted">Listede sürükle–bırakla sıralamayı değiştirebilirsin (mobilde uzun bas–sürükle).</div>
       <div class="list" id="giderList"></div>
     </div>
 
@@ -60,7 +62,7 @@
         <button id="gelirPdfBtn">Gelir PDF Oluştur</button>
         <button class="ghost" id="gelirClearBtn">Temizle</button>
       </div>
-      <div class="muted">Sürükle–bırakla listede sıralamayı değiştirebilirsin.</div>
+      <div class="muted">Listede sürükle–bırakla sıralamayı değiştirebilirsin (mobilde uzun bas–sürükle).</div>
       <div class="list" id="gelirList"></div>
     </div>
   </div>
@@ -71,7 +73,7 @@
       <button class="secondary" id="allPdfBtn">Tümü Tek PDF</button>
       <button class="ghost" id="allClearBtn">Tümünü Temizle</button>
     </div>
-    <p class="muted">Not: Tümü Tek PDF, önce giderler sonra gelirler sırasıyla birleştirir.</p>
+    <p class="muted">Not: “Tümü Tek PDF” önce giderleri, sonra gelirleri sırasıyla birleştirir.</p>
   </div>
 
   <footer>Veriler tarayıcınızda işlenir; sunucuya yüklenmez.</footer>
@@ -82,23 +84,31 @@
 
 <script>
 (function(){
-  const { PDFDocument, StandardFonts } = PDFLib;
+  const { PDFDocument } = PDFLib;
 
-  // Eyalet
-  const state = {
-    gider: [],
-    gelir: []
-  };
+  const state = { gider: [], gelir: [] };
 
-  // Yardımcılar
   const fmtDate = () => {
     const d = new Date();
     const pad = n => String(n).padStart(2,'0');
     return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
   };
 
-  const isPDF = (file) => file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
-  const isImage = (file) => /image\/(png|jpeg)/.test(file.type) || /\.(png|jpg|jpeg)$/i.test(file.name);
+  // iOS uyumlu tespitler
+  const looksLikePDF = (file) => {
+    const name = (file.name || '').toLowerCase();
+    const type = (file.type || '').toLowerCase();
+    // iOS'ta type boş ("") veya application/octet-stream olabilir
+    return name.endsWith('.pdf') || type.includes('pdf') || type === 'application/pdf' || type === 'application/octet-stream';
+  };
+
+  const looksLikeImage = (file) => {
+    const name = (file.name || '').toLowerCase();
+    const type = (file.type || '').toLowerCase();
+    // JPG/PNG (HEIC tarayıcıda her zaman desteklenmeyebilir)
+    if (name.match(/\.(png|jpg|jpeg)$/i)) return true;
+    return /^image\/(png|jpe?g)$/.test(type);
+  };
 
   const readAsArrayBuffer = (file) => new Promise((res, rej)=>{
     const r = new FileReader();
@@ -107,8 +117,7 @@
     r.readAsArrayBuffer(file);
   });
 
-  // Liste UI
-  function renderList(container, arr, bucket){
+  function renderList(container, arr){
     container.innerHTML = '';
     arr.forEach((f, idx)=>{
       const el = document.createElement('div');
@@ -125,26 +134,21 @@
       left.appendChild(handle);
 
       const name = document.createElement('span');
-      name.textContent = f.name;
+      name.textContent = f.name || '(isimsiz dosya)';
       left.appendChild(name);
 
       const right = document.createElement('div');
       const rm = document.createElement('button');
       rm.className='ghost';
       rm.textContent='Kaldır';
-      rm.onclick = () => {
-        arr.splice(idx,1);
-        renderList(container, arr, bucket);
-      };
+      rm.onclick = () => { arr.splice(idx,1); renderList(container, arr); };
       right.appendChild(rm);
 
       el.appendChild(left);
       el.appendChild(right);
 
-      // Drag reorder
-      el.addEventListener('dragstart', (ev)=>{
-        ev.dataTransfer.setData('text/plain', idx);
-      });
+      // Sürükle bırak sıralama
+      el.addEventListener('dragstart', (ev)=>{ ev.dataTransfer.setData('text/plain', idx); });
       el.addEventListener('dragover', (ev)=>ev.preventDefault());
       el.addEventListener('drop', (ev)=>{
         ev.preventDefault();
@@ -153,52 +157,65 @@
         if(from===to) return;
         const moved = arr.splice(from,1)[0];
         arr.splice(to,0,moved);
-        renderList(container, arr, bucket);
+        renderList(container, arr);
       });
 
       container.appendChild(el);
     });
   }
 
-  // Drop alanı
-  function wireDropArea(dropEl, inputEl, targetArr, listEl, bucket){
-    dropEl.addEventListener('dragover', (e)=>{e.preventDefault(); dropEl.classList.add('drag');});
-    dropEl.addEventListener('dragleave', ()=>dropEl.classList.remove('drag'));
+  function wireDropArea(dropEl, inputEl, targetArr, listEl){
+    // Drop alanı
+    ['dragover','dragenter'].forEach(evt => dropEl.addEventListener(evt, (e)=>{e.preventDefault(); dropEl.classList.add('drag');}));
+    ;['dragleave','dragend','drop'].forEach(evt => dropEl.addEventListener(evt, ()=>dropEl.classList.remove('drag')));
     dropEl.addEventListener('drop', (e)=>{
-      e.preventDefault(); dropEl.classList.remove('drag');
-      const files = Array.from(e.dataTransfer.files);
-      pushFiles(targetArr, files, listEl, bucket);
+      e.preventDefault();
+      const files = Array.from(e.dataTransfer.files||[]);
+      pushFiles(targetArr, files, listEl);
     });
+
+    // Tıklayınca seçim
     dropEl.addEventListener('click', ()=> inputEl.click());
     inputEl.addEventListener('change', ()=>{
       const files = Array.from(inputEl.files||[]);
-      pushFiles(targetArr, files, listEl, bucket);
-      inputEl.value = '';
+      pushFiles(targetArr, files, listEl);
+      inputEl.value = ''; // aynı dosyayı tekrar seçebilmek için
     });
   }
 
-  function pushFiles(arr, files, listEl, bucket){
-    const valid = files.filter(f => isPDF(f) || isImage(f));
+  function pushFiles(arr, files, listEl){
+    const valid = files.filter(f => looksLikePDF(f) || looksLikeImage(f));
+    if(valid.length === 0){
+      alert('Seçtiğiniz dosyalar desteklenmiyor. Lütfen PDF veya PNG/JPG seçin.');
+      return;
+    }
     arr.push(...valid);
-    renderList(listEl, arr, bucket);
+    renderList(listEl, arr);
   }
 
-  // PDF oluşturma
   async function filesToPDF(files){
     const out = await PDFDocument.create();
 
     for(const file of files){
-      if(isPDF(file)){
+      if(looksLikePDF(file)){
         const bytes = await readAsArrayBuffer(file);
-        const src = await PDFDocument.load(bytes);
-        const copied = await out.copyPages(src, src.getPageIndices());
-        copied.forEach(p=>out.addPage(p));
-      }else if(isImage(file)){
+        // Bazı PDF'lerde şifre vb. olabilir; hata yakalayalım
+        try{
+          const src = await PDFDocument.load(bytes);
+          const copied = await out.copyPages(src, src.getPageIndices());
+          copied.forEach(p=>out.addPage(p));
+        }catch(e){
+          console.warn('PDF yüklenemedi (şifreli olabilir):', file.name, e);
+          // PDF okunamazsa boş sayfaya isim damgası atalım ki süreç durmasın
+          const page = out.addPage([595.28, 841.89]);
+          page.drawText(`Açılamayan PDF: ${file.name || ''}`, { x: 36, y: 800, size: 12 });
+        }
+      }else if(looksLikeImage(file)){
         const bytes = await readAsArrayBuffer(file);
-        const isJpeg = /\.jpe?g$/i.test(file.name) || file.type==='image/jpeg';
+        const isJpeg = /\.jpe?g$/i.test(file.name || '') || (file.type||'').toLowerCase()==='image/jpeg';
         const img = isJpeg ? await out.embedJpg(bytes) : await out.embedPng(bytes);
 
-        // Görseli A4 sayfaya "contain" yerleştir
+        // A4 sayfaya "contain"
         const A4 = { w: 595.28, h: 841.89 }; // 72dpi
         const page = out.addPage([A4.w, A4.h]);
         const iw = img.width, ih = img.height;
@@ -219,24 +236,26 @@
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
       a.download = name;
+      document.body.appendChild(a);
       a.click();
-      URL.revokeObjectURL(a.href);
+      a.remove();
+      setTimeout(()=>URL.revokeObjectURL(a.href), 2000);
     }catch(err){
       console.error(err);
       alert('PDF oluşturulurken bir hata oluştu.');
     }
   }
 
-  // Elemanlar
+  // Elemanlar ve bağlama
   const giderDrop = document.getElementById('giderDrop');
   const giderInput = document.getElementById('giderInput');
   const giderList = document.getElementById('giderList');
-  wireDropArea(giderDrop, giderInput, state.gider, giderList, 'gider');
+  wireDropArea(giderDrop, giderInput, state.gider, giderList);
 
   const gelirDrop = document.getElementById('gelirDrop');
   const gelirInput = document.getElementById('gelirInput');
   const gelirList = document.getElementById('gelirList');
-  wireDropArea(gelirDrop, gelirInput, state.gelir, gelirList, 'gelir');
+  wireDropArea(gelirDrop, gelirInput, state.gelir, gelirList);
 
   // Butonlar
   document.getElementById('giderPdfBtn').onclick = ()=> makeAndDownload(state.gider, `GIDER_${fmtDate()}.pdf`);
@@ -246,14 +265,13 @@
     makeAndDownload(all, `TUMU_${fmtDate()}.pdf`);
   };
 
-  document.getElementById('giderClearBtn').onclick = ()=>{ state.gider.length=0; renderList(giderList, state.gider, 'gider'); };
-  document.getElementById('gelirClearBtn').onclick = ()=>{ state.gelir.length=0; renderList(gelirList, state.gelir, 'gelir'); };
+  document.getElementById('giderClearBtn').onclick = ()=>{ state.gider.length=0; renderList(giderList, state.gider); };
+  document.getElementById('gelirClearBtn').onclick = ()=>{ state.gelir.length=0; renderList(gelirList, state.gelir); };
   document.getElementById('allClearBtn').onclick = ()=>{
     state.gider.length=0; state.gelir.length=0;
-    renderList(giderList, state.gider, 'gider');
-    renderList(gelirList, state.gelir, 'gelir');
+    renderList(giderList, state.gider);
+    renderList(gelirList, state.gelir);
   };
-
 })();
 </script>
 </body>
